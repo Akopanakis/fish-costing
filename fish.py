@@ -286,9 +286,10 @@ elif menu == "📊 Αναφορές & Κοστολόγηση":
             costs = {
                 'Εργατικά': last_run['Labor_Cost'],
                 'Συσκευασία': last_run['Pack_Cost'],
-                ''Α' Ύλη (Εκτίμηση)': (last_run['Total_Cost_Kg'] * last_run['Total_Output_Kg']) - last_run['Labor_Cost'] - last_run['Pack_Cost']
+                "Α' Ύλη (Εκτίμηση)": (last_run['Total_Cost_Kg'] * last_run['Total_Output_Kg']) - last_run['Labor_Cost'] - last_run['Pack_Cost']
             }
             
             fig_pie = px.pie(values=list(costs.values()), names=list(costs.keys()), title=f"Κόστος: {last_run['SKU']}")
             st.plotly_chart(fig_pie, use_container_width=True)
+
 
