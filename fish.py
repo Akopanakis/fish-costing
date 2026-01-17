@@ -1,199 +1,210 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 import numpy as np
+from datetime import datetime
 
-# --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="Fish Costing Pro", layout="wide", page_icon="🐟")
+# --- ΡΥΘΜΙΣΕΙΣ UI ---
+st.set_page_config(page_title="Fish Factory OS", layout="wide", page_icon="🏭")
 
-# --- ΤΙΤΛΟΣ ---
-col_h1, col_h2 = st.columns([1, 6])
-with col_h1:
-    st.write("# 🐟")
-with col_h2:
-    st.title("Εργαλείο Κοστολόγησης & Παραγωγής")
-    st.caption("Υπολογισμός Κόστους, Νεκρού Σημείου και Στρατηγικής Αγορών")
+# --- CSS ΓΙΑ "ΔΙΕΥΘΥΝΤΙΚΟ" LOOK ---
+st.markdown("""
+<style>
+    .metric-card {background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #1f77b4;}
+    .alert-card {background-color: #ffcccc; padding: 10px; border-radius: 5px; color: #990000; font-weight: bold;}
+    .success-card {background-color: #ccffcc; padding: 10px; border-radius: 5px; color: #006600; font-weight: bold;}
+</style>
+""", unsafe_allow_html=True)
 
-st.markdown("---")
+# --- ΔΕΔΟΜΕΝΑ (ΨΕΥΤΙΚΗ ΒΑΣΗ ΓΙΑ ΤΟ DEMO) ---
+# Εδώ δημιουργούμε ένα ιστορικό παραγωγής για να έχεις κάτι να βλέπεις
+if 'data' not in st.session_state:
+    data = {
+        'Date': pd.date_range(start='2023-10-01', periods=10),
+        'Lot_ID': [f'LOT-2310{i}' for i in range(10)],
+        'Supplier': ['Καΐκι "Αγ. Νικόλαος"', 'Ixthioculture SA', 'Καΐκι "Αγ. Νικόλαος"', 'Import Co', 'Ixthioculture SA']*2,
+        'Input_Kg': [500, 600, 450, 800, 550, 520, 610, 440, 790, 560],
+        'Output_Kg': [350, 430, 310, 550, 390, 360, 440, 305, 545, 400], # Καθαρό
+        'Workers': [5, 6, 5, 8, 5, 5, 6, 5, 8, 5],
+        'Hours': [7, 8, 6.5, 9, 7.5, 7, 8, 6, 9, 7.5],
+        'Glazing_Pct': [14, 15, 12, 16, 15, 14, 15, 13, 15, 15] # Πραγματικό Glazing
+    }
+    st.session_state['data'] = pd.DataFrame(data)
 
-# ==========================================
-# 1. SIDEBAR - ΕΙΣΑΓΩΓΗ ΔΕΔΟΜΕΝΩΝ
-# ==========================================
-st.sidebar.header("📝 Δεδομένα Παραγωγής")
+df = st.session_state['data']
 
-# A. Βασικά Στοιχεία
-st.sidebar.subheader("Τιμές & Προϊόν")
-product_name = st.sidebar.text_input("Προϊόν", "Γαύρος Ακέφαλος IQF")
-selling_price = st.sidebar.number_input("Τιμή Πώλησης (€/kg)", value=4.80, step=0.10)
-raw_material_price = st.sidebar.number_input("Τιμή Αγοράς Α' Ύλης (€/kg)", value=2.30, step=0.10)
+# --- SIDEBAR: ΡΥΘΜΙΣΕΙΣ & ΡΟΛΟΙ ---
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3063/3063822.png", width=80)
+st.sidebar.title("Factory Control")
 
-# B. Δεδομένα Test (Η καρδιά του υπολογισμού)
-st.sidebar.subheader("Αποτέλεσμα Test (Δοκιμής)")
-input_kg = st.sidebar.number_input("Κιλά Εισόδου (Ακατέργαστο)", value=60.0)
-output_kg = st.sidebar.number_input("Κιλά Εξόδου (Καθαρό)", value=42.7)
-ice_percentage = st.sidebar.slider("Ποσοστό Επί Πάγου (Glazing %)", 0, 40, 15)
+# Role Switcher (Το ζήτησες!)
+user_role = st.sidebar.radio("👁️ Προβολή ως:", ["General Manager", "Production Foreman"])
 
-# C. Έξοδα
-st.sidebar.subheader("Λειτουργικά Έξοδα")
-workers = st.sidebar.number_input("Αριθμός Εργατών", value=5)
-daily_wage = st.sidebar.number_input("Ημερομίσθιο ανά άτομο (€)", value=64.0)
-packaging_cost = st.sidebar.number_input("Κόστος Συσκευασίας (€/kg)", value=0.18)
-utility_cost = st.sidebar.number_input("Ενέργεια & Λοιπά (€/kg)", value=0.25)
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Παράμετροι Αγοράς")
+market_price = st.sidebar.number_input("Τιμή Αγοράς (€/kg)", 2.30)
+sell_price = st.sidebar.number_input("Τιμή Πώλησης (€/kg)", 4.80)
+wage_hour = st.sidebar.number_input("Ωρομίσθιο (με ΙΚΑ)", 8.00)
 
-# ==========================================
-# 2. ΥΠΟΛΟΓΙΣΜΟΙ (BACKEND LOGIC)
-# ==========================================
+# Navigation
+page = st.sidebar.selectbox("Μενού", ["📊 Dashboard Διευθυντή", "🏭 Νέα Παραγωγή (Actual)", "📉 Ανάλυση Προμηθευτών"])
 
-# Έλεγχος για διαίρεση με το μηδέν
-if input_kg > 0:
-    yield_raw = (output_kg / input_kg) # Πόσο κρέας βγάζουμε από 1 κιλό
-    raw_cost_clean = raw_material_price / yield_raw # Κόστος καθαρού κρέατος
-else:
-    yield_raw = 0
-    raw_cost_clean = 0
+# --- ΥΠΟΛΟΓΙΣΜΟΙ KPI (Real-time) ---
+df['Yield'] = (df['Output_Kg'] / df['Input_Kg']) * 100
+df['Total_Labor_Cost'] = df['Workers'] * df['Hours'] * wage_hour
+# Κόστος ανά κιλό ΤΕΛΙΚΟΥ προϊόντος (με το Glazing που μπήκε πραγματικά)
+df['Final_Kg_Produced'] = df['Output_Kg'] * (1 / (1 - (df['Glazing_Pct']/100)))
+df['Cost_Per_Kg'] = ( (df['Input_Kg'] * market_price) + df['Total_Labor_Cost'] + (df['Final_Kg_Produced'] * 0.43) ) / df['Final_Kg_Produced']
+# (0.43 είναι συσκευασία+ενέργεια standard)
 
-# Υπολογισμός με τον πάγο
-# Αν βάλουμε 15% πάγο, τότε το 1 κιλό τελικού προϊόντος έχει 850γρ κρέας.
-factor_ice = 1 / (1 - (ice_percentage / 100))
-final_raw_cost = raw_cost_clean / factor_ice 
+# =======================================================
+# PAGE 1: DASHBOARD ΔΙΕΥΘΥΝΤΗ
+# =======================================================
+if page == "📊 Dashboard Διευθυντή":
+    st.title("📊 Executive Dashboard")
+    st.caption(f"Επισκόπηση Παραγωγής | Ρόλος: {user_role}")
 
-# Σύνολα Κόστους
-total_variable_cost = final_raw_cost + packaging_cost + utility_cost
-total_fixed_cost = workers * daily_wage # Σταθερό κόστος ημέρας
-
-# Κέρδος (Margin)
-margin_per_kg = selling_price - total_variable_cost
-margin_per_box = margin_per_kg * 3 # Για κιβώτιο 3 κιλών
-
-# Νεκρό Σημείο (Break Even)
-if margin_per_kg > 0:
-    be_kg = total_fixed_cost / margin_per_kg
-    be_boxes = be_kg / 3
-else:
-    be_kg = 0
-    be_boxes = 0
-
-# Εκτίμηση Ημερήσιας Παραγωγής (Βάσει του Test)
-# Υποθέτουμε ότι το Test των 'input_kg' έγινε σε 35 λεπτά (όπως είχες πει).
-# Αν θες να το αλλάζεις, θα μπορούσαμε να βάλουμε κι αυτό input, αλλά το κρατάω σταθερό για απλότητα.
-minutes_test = 35 
-production_capacity_raw = (input_kg / minutes_test) * 60 * 8 # Σε 8 ώρες
-production_capacity_final = (production_capacity_raw * yield_raw) * (1 + (ice_percentage/100)) # Με τον πάγο
-
-# ==========================================
-# 3. MAIN DASHBOARD - KPI CARDS
-# ==========================================
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Κόστος Παραγωγής", f"{total_variable_cost:.2f} €/kg", delta="Χωρίς Εργατικά")
-col2.metric("Κέρδος ανά Κιλό", f"{margin_per_kg:.2f} €", delta_color="normal")
-col3.metric("Νεκρό Σημείο (Κιβώτια)", f"{int(be_boxes)} τμχ", help="Πόσα πρέπει να πουλήσεις για να βγάλεις τα έξοδα")
-col4.metric("Εκτίμηση Κέρδους Ημέρας", f"{(production_capacity_final * margin_per_kg) - total_fixed_cost:.0f} €", help="Αν δουλέψουν φουλ 8ωρο")
-
-# ==========================================
-# 4. ΓΡΑΦΗΜΑ & ΑΝΑΛΥΣΗ (ΤΟ ΖΗΤΟΥΜΕΝΟ ΣΟΥ)
-# ==========================================
-
-st.subheader("📊 Γράφημα Νεκρού Σημείου")
-
-if margin_per_kg > 0:
-    # Σχεδιασμός Γραφήματος
-    x_max = max(800, be_kg * 2) # Να προσαρμόζεται το γράφημα
-    x = np.linspace(0, x_max, 100)
-    revenue = selling_price * x
-    cost = total_fixed_cost + (total_variable_cost * x)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(x, revenue, label='Έσοδα (Τζίρος)', color='green', linewidth=2)
-    ax.plot(x, cost, label='Συνολικό Κόστος', color='red', linestyle='--', linewidth=2)
+    # Top Metrics
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Σημείο Break Even
-    ax.scatter(be_kg, be_kg * selling_price, color='black', s=120, zorder=5)
-    ax.text(be_kg, (be_kg * selling_price) * 1.1, f' Break-Even\n {int(be_boxes)} Κιβώτια', color='black', fontweight='bold')
+    avg_yield = df['Yield'].mean()
+    avg_glazing = df['Glazing_Pct'].mean()
+    avg_cost = df['Cost_Per_Kg'].mean()
+    last_run_date = df['Date'].max().strftime('%d/%m')
 
-    # Περιοχές
-    ax.fill_between(x, revenue, cost, where=(revenue > cost), interpolate=True, color='green', alpha=0.1)
-    ax.fill_between(x, revenue, cost, where=(revenue < cost), interpolate=True, color='red', alpha=0.1)
-
-    ax.set_xlabel("Ποσότητα (kg)")
-    ax.set_ylabel("Ευρώ (€)")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    st.pyplot(fig)
-
-    # --- Η ΑΥΤΟΜΑΤΗ ΕΠΕΞΗΓΗΣΗ (NOTE) ---
-    st.info(f"""
-    **📌 Τι μας λέει αυτό το γράφημα:**
+    col1.metric("Μέση Απόδοση (Yield)", f"{avg_yield:.1f}%", delta=f"{avg_yield-71.2:.1f}% vs Target")
+    col2.metric("Μέσο Glazing", f"{avg_glazing:.1f}%", delta=f"{avg_glazing-15:.1f}% vs Target")
     
-    1.  **Η "Ζώνη Κινδύνου":** Ξεκινάς την ημέρα με **-{total_fixed_cost}€** (μισθοί). Μέχρι να πουλήσεις τα πρώτα **{int(be_boxes)} κιβώτια**, η κόκκινη γραμμή είναι πάνω από την πράσινη. Αυτό σημαίνει ότι "μπαίνεις μέσα".
-    2.  **Το Σημείο Μηδέν:** Μόλις πουλήσεις το **{int(be_boxes) + 1}ο κιβώτιο**, έχεις καλύψει όλα τα έξοδα της ημέρας (Ψάρια, Υλικά, Ρεύμα, Προσωπικό).
-    3.  **Η "Ζώνη Κέρδους":** Από εκεί και πέρα, κάθε κιβώτιο που φεύγει από το μαγαζί, σου αφήνει καθαρό κέρδος **{margin_per_box:.2f}€** στην τσέπη.
+    if user_role == "General Manager":
+        col3.metric("Μέσο Κόστος", f"{avg_cost:.2f} €/kg", delta=f"{(sell_price - avg_cost):.2f} € Margin", delta_color="inverse")
+    else:
+        col3.metric("Μέσο Κόστος", "🔒 HIDDEN", "Access Denied")
+        
+    col4.metric("Τελευταία Παραγωγή", last_run_date)
+
+    # ALERTS SECTION (Αυτό που ήθελες για να μην έχεις εκπλήξεις)
+    st.subheader("🚨 Active Alerts")
+    
+    c1, c2 = st.columns(2)
+    # Yield Alert
+    low_yield_runs = df[df['Yield'] < 28]
+    if not low_yield_runs.empty:
+        c1.error(f"⚠️ ΠΡΟΣΟΧΗ: {len(low_yield_runs)} παρτίδες είχαν φύρα κάτω από το όριο (28%)! Ελέγξτε τους προμηθευτές.")
+    else:
+        c1.success("✅ Όλες οι παρτίδες έχουν αποδεκτή απόδοση.")
+        
+    # Glazing Alert
+    bad_glazing = df[(df['Glazing_Pct'] < 13) | (df['Glazing_Pct'] > 17)]
+    if not bad_glazing.empty:
+        c2.warning(f"⚠️ ΠΡΟΣΟΧΗ: {len(bad_glazing)} παρτίδες έχουν απόκλιση στο Glazing (>2%). Κίνδυνος ποιότητας.")
+    else:
+        c2.success("✅ Το Glazing είναι εντός ορίων.")
+
+    # GRAPHS
+    st.markdown("---")
+    c_chart1, c_chart2 = st.columns(2)
+    
+    with c_chart1:
+        st.subheader("📉 Τάση Κόστους vs Τιμή Πώλησης")
+        if user_role == "General Manager":
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['Cost_Per_Kg'], name='Πραγματικό Κόστος', line=dict(color='red')))
+            fig.add_trace(go.Scatter(x=df['Date'], y=[sell_price]*len(df), name='Τιμή Πώλησης', line=dict(color='green', dash='dash')))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Δεν έχετε δικαίωμα προβολής οικονομικών στοιχείων.")
+
+    with c_chart2:
+        st.subheader("⚖️ Απόδοση (Yield) ανά Παρτίδα")
+        fig2 = px.bar(df, x='Lot_ID', y='Yield', color='Supplier', title="Ποια παρτίδα πήγε καλά;")
+        # Προσθήκη γραμμής στόχου
+        fig2.add_hline(y=71.2, line_dash="dot", annotation_text="Target Yield", annotation_position="bottom right")
+        st.plotly_chart(fig2, use_container_width=True)
+
+# =======================================================
+# PAGE 2: ΚΑΤΑΧΩΡΗΣΗ ΠΑΡΑΓΩΓΗΣ (ACTUAL)
+# =======================================================
+elif page == "🏭 Νέα Παραγωγή (Actual)":
+    st.title("📝 Ημερήσιο Δελτίο Παραγωγής")
+    
+    # Lot Number Generator
+    today_str = datetime.now().strftime("%y%m%d")
+    lot_suffix = st.sidebar.text_input("Lot Suffix", "A")
+    auto_lot = f"LOT-{today_str}-{lot_suffix}"
+    
+    with st.form("production_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"🆔 New Batch ID: **{auto_lot}**")
+            supplier = st.selectbox("Προμηθευτής", ["Καΐκι 'Αγ. Νικόλαος'", "Ixthioculture SA", "Import Co", "Άλλος"])
+            input_w = st.number_input("⚖️ Κιλά Εισόδου (Ακατέργαστο)", min_value=0.0)
+            output_w = st.number_input("🐟 Κιλά Εξόδου (Καθαρό Κρέας)", min_value=0.0)
+        
+        with col2:
+            st.write("### 👥 Εργατικά & Ποιότητα")
+            staff_num = st.number_input("Αριθμός Ατόμων", min_value=1, value=5)
+            hours_worked = st.number_input("Ώρες Εργασίας", min_value=0.5, value=7.0)
+            ice_pct = st.slider("❄️ Μετρημένο Glazing (%)", 0, 30, 15)
+        
+        submitted = st.form_submit_button("💾 Καταχώρηση Παραγωγής")
+        
+        if submitted and input_w > 0:
+            # Υπολογισμοί "on the fly"
+            actual_yield = (output_w / input_w) * 100
+            target_yield = 71.2 # Στόχος
+            
+            st.success("Η παραγωγή καταχωρήθηκε!")
+            
+            # FEEDBACK ΣΤΟΝ ΔΙΕΥΘΥΝΤΗ
+            st.markdown("### 🔎 Ανάλυση Παρτίδας")
+            c1, c2, c3 = st.columns(3)
+            
+            c1.metric("Πραγματική Φύρα", f"{100-actual_yield:.1f}%", delta=f"{(100-actual_yield) - 28.8:.1f}%")
+            
+            # Υπολογισμός Κόστους για αυτή την παρτίδα
+            final_kg = output_w * (1 / (1 - (ice_pct/100)))
+            labor_cost = staff_num * hours_worked * wage_hour
+            this_cost = ((input_w * market_price) + labor_cost + (final_kg * 0.43)) / final_kg
+            
+            if user_role == "General Manager":
+                c2.metric("Τελικό Κόστος Παρτίδας", f"{this_cost:.2f} €/kg")
+                if this_cost > sell_price:
+                    st.error(f"⛔ ΖΗΜΙΑ! Αυτή η παρτίδα κόστισε {this_cost:.2f}€ ενώ πουλάμε {sell_price}€.")
+                else:
+                    st.balloons()
+                    st.success(f"✅ ΚΕΡΔΟΣ: {sell_price - this_cost:.2f}€ ανά κιλό.")
+            else:
+                c2.info("Cost Data Hidden")
+
+# =======================================================
+# PAGE 3: ΑΝΑΛΥΣΗ ΠΡΟΜΗΘΕΥΤΩΝ
+# =======================================================
+elif page == "📉 Ανάλυση Προμηθευτών":
+    st.title("🤝 Αξιολόγηση Προμηθευτών")
+    st.write("Ποιος μας δίνει το καλύτερο ψάρι;")
+    
+    # Group by Supplier
+    supplier_stats = df.groupby('Supplier').agg({
+        'Yield': 'mean',
+        'Input_Kg': 'sum',
+        'Cost_Per_Kg': 'mean'
+    }).reset_index()
+    
+    # Chart
+    fig = px.scatter(supplier_stats, x='Yield', y='Cost_Per_Kg', size='Input_Kg', color='Supplier',
+                     title="Σχέση Απόδοσης vs Κόστους (Το μέγεθος κύκλου είναι η ποσότητα)",
+                     labels={'Yield': 'Μέση Απόδοση (%)', 'Cost_Per_Kg': 'Μέσο Κόστος (€)'})
+    
+    # Γραμμές Στόχων
+    fig.add_vline(x=71.2, line_dash="dash", line_color="green", annotation_text="Target Yield")
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    st.info("""
+    **Πώς να διαβάσεις αυτό το γράφημα:**
+    * **Κάτω Δεξιά = Ο Ιδανικός Προμηθευτής** (Υψηλή Απόδοση, Χαμηλό Κόστος).
+    * **Πάνω Αριστερά = Προς Διαγραφή** (Χαμηλή Απόδοση, Ακριβό Κόστος).
     """)
-
-else:
-    st.error("⛔ ΠΡΟΣΟΧΗ: Η τιμή πώλησης είναι μικρότερη από το κόστος παραγωγής! Κάθε κιλό που παράγεις αυξάνει τη ζημιά.")
-
-# ==========================================
-# 5. ΕΡΓΑΛΕΙΑ ΣΤΡΑΤΗΓΙΚΗΣ (TABS)
-# ==========================================
-st.markdown("---")
-st.header("🛠️ Εργαλεία Στρατηγικής")
-
-tab1, tab2 = st.tabs(["🚦 Πίνακας Σεναρίων (Matrix)", "🛒 Υπολογιστής Παραγγελίας"])
-
-with tab1:
-    st.write("**Πώς αλλάζει το Κέρδος (€/kg) αν αλλάξουν οι τιμές Αγοράς & Πώλησης;**")
     
-    # Δημιουργία εύρους τιμών γύρω από τις τρέχουσες
-    b_min, b_max = raw_material_price - 0.5, raw_material_price + 0.5
-    s_min, s_max = selling_price - 0.5, selling_price + 0.5
-    
-    buy_prices = np.linspace(b_min, b_max, 5)
-    sell_prices = np.linspace(s_min, s_max, 5)
-    
-    profit_matrix = []
-    for buy in buy_prices:
-        row = []
-        # Γρήγορος υπολογισμός κόστους για το σενάριο
-        t_cost = (buy / yield_raw / factor_ice) + packaging_cost + utility_cost
-        for sell in sell_prices:
-            row.append(sell - t_cost)
-        profit_matrix.append(row)
-    
-    df_matrix = pd.DataFrame(profit_matrix, 
-                             index=[f"Αγορά {p:.2f}€" for p in buy_prices], 
-                             columns=[f"Πώληση {p:.2f}€" for p in sell_prices])
-    
-    # Χρωματισμός
-    def color_scale(val):
-        if val < 0: color = '#ffcccc' # Light Red
-        elif val < 1: color = '#ffffcc' # Light Yellow
-        else: color = '#ccffcc' # Light Green
-        return f'background-color: {color}; color: black'
-
-    st.dataframe(df_matrix.style.applymap(color_scale).format("{:.2f} €"))
-    st.caption("Πράσινο = Καλό Κέρδος (>1€), Κίτρινο = Μικρό Κέρδος, Κόκκινο = Ζημιά")
-
-with tab2:
-    st.subheader("Αντίστροφος Υπολογισμός (Reverse)")
-    col_in1, col_in2 = st.columns(2)
-    target_boxes = col_in1.number_input("Πόσα κιβώτια (3kg) ζητάει ο πελάτης;", value=100)
-    
-    if yield_raw > 0:
-        # Μαθηματικά
-        target_final_kg = target_boxes * 3
-        # Αφαιρούμε πάγο για να βρούμε καθαρό κρέας
-        target_meat_only = target_final_kg * (1 - (ice_percentage/100))
-        # Διαιρούμε με απόδοση για να βρούμε ακατέργαστο
-        needed_raw = target_meat_only / yield_raw
-        
-        # Υπολογισμός Χρόνου (με βάση το benchmark των 5 ατόμων / 35 λεπτών)
-        # Ρυθμός παραγωγής (kg ακατέργαστου ανά λεπτό)
-        rate_per_min = input_kg / 35 
-        minutes_needed = needed_raw / rate_per_min
-        hours_needed = minutes_needed / 60
-        
-        st.success(f"Για να βγάλεις **{target_boxes} κιβώτια**:")
-        st.write(f"🐟 Πρέπει να αγοράσεις: **{int(needed_raw)} κιλά** ακατέργαστο ψάρι.")
-        st.write(f"⏱️ Η ομάδα των {workers} ατόμων θα χρειαστεί: **{hours_needed:.1f} ώρες**.")
-        st.write(f"💰 Θα κοστίσει σε υλικά & εργατικά περίπου: **{(target_final_kg * total_variable_cost) + (hours_needed/8 * total_fixed_cost):.2f} €**")
+    st.dataframe(supplier_stats.style.highlight_max(axis=0, color='lightgreen'))
